@@ -1,0 +1,73 @@
+# Alerts about the workload itself rather than the traffic it serves.
+#
+# Scoped to the demo-api container so they do not overlap with the cluster-wide
+# rules that kube-prometheus-stack already ships.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: demo-api-workload
+  labels:
+    app.kubernetes.io/name: demo-api
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: k8s-observability-stack
+spec:
+  groups:
+    - name: demo-api.workload
+      interval: 15s
+      rules:
+        - alert: PodCrashLooping
+          expr: |
+            max by (namespace, pod, container) (
+              kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff", container="demo-api"}
+            ) > 0
+          # Short, because CrashLoopBackOff is already a state the kubelet only
+          # reports after several failed starts.
+          for: 2m
+          labels:
+            severity: critical
+            service: demo-api
+          annotations:
+            summary: "demo-api pod is crash looping"
+            description: >-
+              Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has been
+              in CrashLoopBackOff for more than 2 minutes.
+            runbook_url: "https://github.com/dimagrotser/k8s-observability-stack/blob/main/docs/runbook.md#podcrashlooping"
+
+        - alert: PodNotReady
+          # condition="true" is 1 when the pod is ready. Comparing to 0 also
+          # catches the "unknown" condition, which a separate condition="false"
+          # matcher would miss.
+          expr: |
+            max by (namespace, pod) (
+              kube_pod_status_ready{condition="true", pod=~"demo-api-.*"}
+            ) == 0
+          for: 5m
+          labels:
+            severity: warning
+            service: demo-api
+          annotations:
+            summary: "demo-api pod has been not ready for 5 minutes"
+            description: >-
+              Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has not
+              passed its readiness probe for 5 minutes, so it is receiving no
+              traffic.
+            runbook_url: "https://github.com/dimagrotser/k8s-observability-stack/blob/main/docs/runbook.md#podnotready"
+
+        - alert: HighMemoryUsage
+          expr: |
+            100 * (
+              max by (namespace, pod) (container_memory_working_set_bytes{container="demo-api"})
+              /
+              max by (namespace, pod) (kube_pod_container_resource_limits{container="demo-api", resource="memory"})
+            ) > 90
+          for: 5m
+          labels:
+            severity: warning
+            service: demo-api
+          annotations:
+            summary: "demo-api is using more than 90% of its memory limit"
+            description: >-
+              Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} is at
+              {{ $value | printf "%.1f" }}% of its memory limit. Above 100% the
+              kernel OOM kills the container.
+            runbook_url: "https://github.com/dimagrotser/k8s-observability-stack/blob/main/docs/runbook.md#highmemoryusage"

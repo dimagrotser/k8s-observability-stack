@@ -1,0 +1,41 @@
+# How to make Alertmanager actually deliver somewhere.
+#
+#   cp monitoring/alertmanager-webhook.example.yaml monitoring/secrets/alertmanager-webhook.yaml
+#   # replace the URLs below with your own
+#   make monitoring-up HELM_EXTRA_VALUES=monitoring/secrets/alertmanager-webhook.yaml
+#
+# monitoring/secrets/ is gitignored, so the URL never reaches the repository.
+#
+# Helm replaces lists rather than merging them, so the whole `receivers` list
+# has to be repeated here, not just the part that changes.
+#
+# --- Slack -----------------------------------------------------------------
+# A Slack incoming webhook is a plain HTTP webhook, so it works as the `url`
+# below with no extra configuration. Create one at
+# https://api.slack.com/messaging/webhooks and paste the
+# https://hooks.slack.com/services/... URL in.
+#
+# For Slack-specific formatting (channel, title, colour by severity) swap
+# `webhook_configs` for `slack_configs`:
+#
+#   - name: "critical"
+#     slack_configs:
+#       - api_url: https://hooks.slack.com/services/T000/B000/XXXX
+#         channel: "#alerts-critical"
+#         send_resolved: true
+#         title: '{{ .CommonAnnotations.summary }}'
+#         text: "{{ .CommonAnnotations.description }}\n{{ .CommonAnnotations.runbook_url }}"
+alertmanager:
+  config:
+    receivers:
+      - name: "null"
+
+      - name: "critical"
+        webhook_configs:
+          - url: https://hooks.slack.com/services/REPLACE/ME/PLEASE
+            send_resolved: true
+
+      - name: "warning"
+        webhook_configs:
+          - url: https://hooks.slack.com/services/REPLACE/ME/PLEASE
+            send_resolved: true

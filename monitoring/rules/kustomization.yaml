@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# The rules live next to Prometheus. The operator picks them up by label
+# selector, not by namespace, but keeping them here makes `kubectl get
+# prometheusrule -n monitoring` show the full picture.
+namespace: monitoring
+
+resources:
+  - service-alerts.yaml
+  - workload-alerts.yaml

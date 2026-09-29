@@ -1,0 +1,59 @@
+# Alerts about what users experience: the RED signals of demo-api.
+#
+# Every expression repeats the same probe filter as the dashboards. /health,
+# /ready and /metrics are probe and scrape traffic, and a 503 from /ready during
+# warm-up is not a service error.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: demo-api-service
+  labels:
+    app.kubernetes.io/name: demo-api
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: k8s-observability-stack
+spec:
+  groups:
+    - name: demo-api.service
+      # Matches the Prometheus evaluationInterval; there is nothing to gain from
+      # evaluating a 5m rate more often than that.
+      interval: 15s
+      rules:
+        - alert: HighErrorRate
+          expr: |
+            100 * sum by (namespace, job) (
+              rate(http_request_errors_total{job="demo-api", route!~"/health|/ready|/metrics"}[5m])
+            )
+            /
+            sum by (namespace, job) (
+              rate(http_requests_total{job="demo-api", route!~"/health|/ready|/metrics"}[5m])
+            ) > 5
+          for: 5m
+          labels:
+            severity: critical
+            service: demo-api
+          annotations:
+            summary: "demo-api is returning more than 5% errors"
+            description: >-
+              {{ $value | printf "%.1f" }}% of requests to demo-api in namespace
+              {{ $labels.namespace }} returned 5xx over the last 5 minutes.
+              The threshold is 5% and it has held for 5 minutes.
+            runbook_url: "https://github.com/dimagrotser/k8s-observability-stack/blob/main/docs/runbook.md#higherrorrate"
+
+        - alert: HighLatencyP95
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le, namespace, job) (
+                rate(http_request_duration_seconds_bucket{job="demo-api", route!~"/health|/ready|/metrics"}[5m])
+              )
+            ) > 0.5
+          for: 5m
+          labels:
+            severity: warning
+            service: demo-api
+          annotations:
+            summary: "demo-api p95 latency is above 500ms"
+            description: >-
+              p95 latency for demo-api in namespace {{ $labels.namespace }} is
+              {{ $value | printf "%.3f" }}s, above the 500ms threshold, and has
+              stayed there for 5 minutes.
+            runbook_url: "https://github.com/dimagrotser/k8s-observability-stack/blob/main/docs/runbook.md#highlatencyp95"
