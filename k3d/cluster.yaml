@@ -1,0 +1,25 @@
+# k3d cluster definition. Pinned to a specific k3s version so the cluster a
+# reviewer creates today matches the one this project was verified against.
+#
+#   k3d cluster create --config k3d/cluster.yaml
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: obs
+
+servers: 1
+agents: 1
+
+image: rancher/k3s:v1.36.4-k3s1
+
+ports:
+  # Traefik ships with k3s and fronts the cluster. Publishing it on 8080 keeps
+  # the demo off privileged ports and away from anything already on :80.
+  - port: 8080:80
+    nodeFilters:
+      - loadbalancer
+
+options:
+  k3d:
+    wait: true
+    timeout: "180s"

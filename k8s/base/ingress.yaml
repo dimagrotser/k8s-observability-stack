@@ -1,0 +1,23 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: demo-api
+  labels:
+    app.kubernetes.io/name: demo-api
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: k8s-observability-stack
+spec:
+  ingressClassName: traefik
+  rules:
+    # *.localhost resolves to 127.0.0.1 on macOS and Linux, so there is nothing
+    # to add to /etc/hosts.
+    - host: demo.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: demo-api
+                port:
+                  name: http

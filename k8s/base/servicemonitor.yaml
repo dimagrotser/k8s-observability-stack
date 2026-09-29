@@ -1,0 +1,22 @@
+# Tells the Prometheus operator to scrape the app. The operator turns this into
+# a scrape config, so the app never has to be listed in a Prometheus file.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: demo-api
+  labels:
+    app.kubernetes.io/name: demo-api
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: k8s-observability-stack
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: demo-api
+      app.kubernetes.io/component: api
+  endpoints:
+    # Referenced by name, so changing the port number is a one-line change in
+    # the Deployment and the Service.
+    - port: http
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s

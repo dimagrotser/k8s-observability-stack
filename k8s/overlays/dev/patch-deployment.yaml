@@ -1,0 +1,13 @@
+# Dev-only tweaks. Chaos is off by default here; `make demo-alert` turns it on.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-api
+spec:
+  template:
+    spec:
+      containers:
+        - name: demo-api
+          # The image is side-loaded with `k3d image import`, there is no
+          # registry for the cluster to pull it from.
+          imagePullPolicy: IfNotPresent
