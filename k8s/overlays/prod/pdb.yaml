@@ -1,0 +1,17 @@
+# Keeps a voluntary disruption, such as a node drain during an upgrade, from
+# taking the service down. With three replicas this allows exactly one pod to
+# go at a time.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: demo-api
+  labels:
+    app.kubernetes.io/name: demo-api
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: k8s-observability-stack
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: demo-api
+      app.kubernetes.io/component: api

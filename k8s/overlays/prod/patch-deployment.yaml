@@ -1,0 +1,48 @@
+# Production differences from the base: a rollout that never dips below the
+# declared capacity, tighter resources, and pods spread across nodes.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-api
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Never take capacity away during a deploy. The new pod has to be ready
+      # before an old one goes. maxSurge 1 is what pays for that.
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    spec:
+      topologySpreadConstraints:
+        # ScheduleAnyway, not DoNotSchedule: this demo cluster has two nodes and
+        # three replicas, so a hard constraint would leave a pod Pending
+        # forever. On a cluster with enough nodes, tighten this.
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: demo-api
+              app.kubernetes.io/component: api
+      containers:
+        - name: demo-api
+          # The image is side loaded here so the prod overlay can be exercised
+          # on the local cluster. A real cluster would point `images:` at the
+          # GHCR digest and pull it instead.
+          imagePullPolicy: IfNotPresent
+          env:
+            # No simulated warm-up outside the demo. Merged by name, so the
+            # other variables from the base stay as they are.
+            - name: READY_DELAY_MS
+              value: "0"
+          resources:
+            # Requests are raised so the scheduler reserves something realistic,
+            # and the gap to the limits is narrower than in dev: less room to
+            # borrow means fewer noisy-neighbour surprises.
+            requests:
+              cpu: 100m
+              memory: 96Mi
+            limits:
+              cpu: 500m
+              memory: 192Mi
