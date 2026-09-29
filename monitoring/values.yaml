@@ -1,0 +1,196 @@
+# kube-prometheus-stack values for a local k3d cluster.
+#
+# The chart version itself is pinned in the Makefile (CHART_VERSION), so the
+# version and the values it was tested against move together.
+
+fullnameOverride: kube-prometheus-stack
+
+## --- control plane --------------------------------------------------------
+## k3s runs the API server, scheduler, controller manager and kube-proxy inside
+## a single process. The chart discovers each of them through its own Service
+## with a component selector, finds no matching pods, and the targets sit in
+## the target list permanently down. They are disabled rather than left red:
+## a dashboard full of broken targets teaches a reviewer nothing.
+##
+## etcd is off for the same reason - a single-server k3s uses embedded SQLite.
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false
+kubeEtcd:
+  enabled: false
+
+## --- prometheus -----------------------------------------------------------
+prometheus:
+  ingress:
+    enabled: true
+    ingressClassName: traefik
+    hosts:
+      - prometheus.localhost
+    paths:
+      - /
+    pathType: Prefix
+
+  prometheusSpec:
+    retention: 24h
+    scrapeInterval: 15s
+    evaluationInterval: 15s
+
+    # By default the chart only selects ServiceMonitors and PrometheusRules
+    # carrying its own release label. This repository ships plain manifests
+    # through Kustomize, so that restriction is lifted.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    probeSelectorNilUsesHelmValues: false
+    scrapeConfigSelectorNilUsesHelmValues: false
+
+    resources:
+      requests:
+        cpu: 100m
+        memory: 512Mi
+      limits:
+        memory: 1Gi
+
+    # No storageSpec on purpose: this cluster is disposable, and emptyDir keeps
+    # `make cluster-down` from leaving orphaned volumes on the host.
+
+## --- alertmanager ---------------------------------------------------------
+alertmanager:
+  ## Routing is by severity. The receivers deliberately carry no notifier in
+  ## this file: the repository ships no webhook URL, because a Slack or Teams
+  ## URL is a credential. A receiver with only a name is valid Alertmanager
+  ## config and drops the notification silently, so the default install is
+  ## quiet instead of spamming delivery errors at a placeholder URL.
+  ##
+  ## To actually deliver somewhere, copy
+  ## monitoring/alertmanager-webhook.example.yaml to a local file and layer it
+  ## on top:
+  ##
+  ##   cp monitoring/alertmanager-webhook.example.yaml \
+  ##      monitoring/secrets/alertmanager-webhook.yaml
+  ##   # put your URL in, then
+  ##   make monitoring-up HELM_EXTRA_VALUES=monitoring/secrets/alertmanager-webhook.yaml
+  ##
+  ## Alerts are visible in the Alertmanager UI either way.
+  config:
+    global:
+      resolve_timeout: 5m
+
+    route:
+      # Group by alert and namespace so one bad deploy is one notification
+      # rather than one per pod.
+      group_by: ["alertname", "namespace"]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+      receiver: "null"
+
+      routes:
+        # Watchdog is the chart's own always-firing heartbeat. It exists to
+        # prove the pipeline works and must never reach a human.
+        - receiver: "null"
+          matchers:
+            - alertname = "Watchdog"
+
+        - receiver: "critical"
+          matchers:
+            - severity = "critical"
+          # Page fast and keep reminding.
+          group_wait: 10s
+          repeat_interval: 1h
+
+        - receiver: "warning"
+          matchers:
+            - severity = "warning"
+          repeat_interval: 12h
+
+    receivers:
+      - name: "null"
+      - name: "critical"
+      - name: "warning"
+
+    inhibit_rules:
+      # While something is critical, the warning about the same alert in the
+      # same namespace is noise.
+      - source_matchers:
+          - severity = "critical"
+        target_matchers:
+          - severity = "warning"
+        equal: ["alertname", "namespace"]
+
+  ingress:
+    enabled: true
+    ingressClassName: traefik
+    hosts:
+      - alertmanager.localhost
+    paths:
+      - /
+    pathType: Prefix
+
+  alertmanagerSpec:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+      limits:
+        memory: 128Mi
+
+## --- grafana --------------------------------------------------------------
+grafana:
+  # Credentials come from a Secret created by `make grafana-secret`, which
+  # generates a random password into monitoring/secrets/ (gitignored).
+  # Nothing in this file is a credential.
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+
+  ingress:
+    enabled: true
+    ingressClassName: traefik
+    hosts:
+      - grafana.localhost
+    path: /
+
+  defaultDashboardsTimezone: browser
+
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL
+      # Lets a ConfigMap choose its Grafana folder through an annotation, so the
+      # dashboards in this repo do not land next to the chart's built-in ones.
+      folderAnnotation: grafana_folder
+      provider:
+        foldersFromFilesStructure: true
+
+  # Grafana 12 needs noticeably more than the 256Mi a first guess suggests:
+  # at 256Mi the container is OOMKilled seconds after the HTTP server starts.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+
+## --- exporters ------------------------------------------------------------
+prometheus-node-exporter:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 64Mi
+
+kube-state-metrics:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 128Mi

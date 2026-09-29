@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: monitoring
+
+generatorOptions:
+  # No name suffix hash: the Grafana sidecar watches ConfigMaps by label, and a
+  # stable name means an edited dashboard updates in place instead of piling up
+  # a new ConfigMap on every apply.
+  disableNameSuffixHash: true
+  labels:
+    grafana_dashboard: "1"
+  annotations:
+    grafana_folder: demo-api
+
+configMapGenerator:
+  - name: grafana-dashboard-service-red
+    files:
+      - service-red.json
+  - name: grafana-dashboard-workload-use
+    files:
+      - workload-use.json
