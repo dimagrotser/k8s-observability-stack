@@ -45,17 +45,25 @@ make demo-alert
 
 ## Dashboards
 
-> **Screenshot placeholder.** `demo-api / RED` under load. Save it as
-> `docs/images/dashboard-red.png` and replace this block with
-> `![RED dashboard](docs/images/dashboard-red.png)`.
+`demo-api / RED` during `make demo-alert`, with `ERROR_RATE=0.5`. The 5xx panel
+sits on its plateau well above the red 5% threshold line, and the split by
+status shows where the traffic went.
 
-> **Screenshot placeholder.** `demo-api / USE` showing CPU and memory against
-> their limits. Save it as `docs/images/dashboard-use.png` and replace this
-> block with `![USE dashboard](docs/images/dashboard-use.png)`.
+![RED dashboard](docs/images/dashboard-red.png)
 
-> **Screenshot placeholder.** Alertmanager with `HighErrorRate` firing. Save it
-> as `docs/images/alert-firing.png` and replace this block with
-> `![HighErrorRate firing](docs/images/alert-firing.png)`.
+`demo-api / USE` over the same window. CPU and memory are drawn against their
+limits as dashed lines, CPU throttling appears as the load lands, and the
+Node.js event loop lag spikes to 37ms. That last panel is the reason it exists:
+event loop saturation does not show up in the container CPU numbers.
+
+![USE dashboard](docs/images/dashboard-use.png)
+
+Alertmanager once the alert has held for its five minutes. The groups are the
+severity routing: `Watchdog` to the null receiver, `HighErrorRate` to critical,
+the node clock warning to warning. The expanded alert shows the rendered
+description and the runbook link.
+
+![HighErrorRate firing](docs/images/alert-firing.png)
 
 ## Architecture
 
