@@ -1,0 +1,115 @@
+# Unit tests for the workload alerts.
+rule_files:
+  - workload-alerts.yaml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    name: crash looping fires after two minutes
+    input_series:
+      - series: 'kube_pod_container_status_waiting_reason{namespace="demo-dev", pod="demo-api-6bf7dd8bcd-c6x8s", container="demo-api", reason="CrashLoopBackOff"}'
+        values: "1x10"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: PodCrashLooping
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: PodCrashLooping
+        exp_alerts:
+          - exp_labels:
+              alertname: PodCrashLooping
+              severity: critical
+              service: demo-api
+              namespace: demo-dev
+              pod: demo-api-6bf7dd8bcd-c6x8s
+              container: demo-api
+            exp_annotations:
+              summary: "demo-api pod is crash looping"
+              description: "Pod demo-api-6bf7dd8bcd-c6x8s in namespace demo-dev has been in CrashLoopBackOff for more than 2 minutes."
+              runbook_url: "https://github.com/dimagrotser/k8s-observability-stack/blob/main/docs/runbook.md#podcrashlooping"
+
+  # A container waiting for a different reason, such as pulling its image, is
+  # not a crash loop.
+  - interval: 1m
+    name: other waiting reasons are not a crash loop
+    input_series:
+      - series: 'kube_pod_container_status_waiting_reason{namespace="demo-dev", pod="demo-api-6bf7dd8bcd-c6x8s", container="demo-api", reason="ContainerCreating"}'
+        values: "1x10"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PodCrashLooping
+        exp_alerts: []
+
+  - interval: 1m
+    name: a pod that never becomes ready fires after five minutes
+    input_series:
+      - series: 'kube_pod_status_ready{namespace="demo-dev", pod="demo-api-6bf7dd8bcd-c6x8s", condition="true"}'
+        values: "0x10"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: PodNotReady
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: PodNotReady
+        exp_alerts:
+          - exp_labels:
+              alertname: PodNotReady
+              severity: warning
+              service: demo-api
+              namespace: demo-dev
+              pod: demo-api-6bf7dd8bcd-c6x8s
+            exp_annotations:
+              summary: "demo-api pod has been not ready for 5 minutes"
+              description: "Pod demo-api-6bf7dd8bcd-c6x8s in namespace demo-dev has not passed its readiness probe for 5 minutes, so it is receiving no traffic."
+              runbook_url: "https://github.com/dimagrotser/k8s-observability-stack/blob/main/docs/runbook.md#podnotready"
+
+  - interval: 1m
+    name: a ready pod never fires
+    input_series:
+      - series: 'kube_pod_status_ready{namespace="demo-dev", pod="demo-api-6bf7dd8bcd-c6x8s", condition="true"}'
+        values: "1x10"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PodNotReady
+        exp_alerts: []
+
+  # 95Mi of a 100Mi limit. Round numbers keep the rendered percentage in the
+  # description predictable.
+  - interval: 1m
+    name: memory above ninety percent of the limit fires
+    input_series:
+      - series: 'container_memory_working_set_bytes{namespace="demo-dev", pod="demo-api-6bf7dd8bcd-c6x8s", container="demo-api"}'
+        values: "99614720x10"
+      - series: 'kube_pod_container_resource_limits{namespace="demo-dev", pod="demo-api-6bf7dd8bcd-c6x8s", container="demo-api", resource="memory", unit="byte"}'
+        values: "104857600x10"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: HighMemoryUsage
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: HighMemoryUsage
+        exp_alerts:
+          - exp_labels:
+              alertname: HighMemoryUsage
+              severity: warning
+              service: demo-api
+              namespace: demo-dev
+              pod: demo-api-6bf7dd8bcd-c6x8s
+            exp_annotations:
+              summary: "demo-api is using more than 90% of its memory limit"
+              description: "Pod demo-api-6bf7dd8bcd-c6x8s in namespace demo-dev is at 95.0% of its memory limit. Above 100% the kernel OOM kills the container."
+              runbook_url: "https://github.com/dimagrotser/k8s-observability-stack/blob/main/docs/runbook.md#highmemoryusage"
+
+  # 80Mi of the same 100Mi limit stays quiet.
+  - interval: 1m
+    name: memory below the threshold stays quiet
+    input_series:
+      - series: 'container_memory_working_set_bytes{namespace="demo-dev", pod="demo-api-6bf7dd8bcd-c6x8s", container="demo-api"}'
+        values: "83886080x10"
+      - series: 'kube_pod_container_resource_limits{namespace="demo-dev", pod="demo-api-6bf7dd8bcd-c6x8s", container="demo-api", resource="memory", unit="byte"}'
+        values: "104857600x10"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HighMemoryUsage
+        exp_alerts: []

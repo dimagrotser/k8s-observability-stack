@@ -1,0 +1,121 @@
+# Unit tests for the RED alerts.
+#
+# The point of these is not that PromQL works, it is that the thresholds, the
+# hold durations and the annotation templating are what the runbook claims.
+rule_files:
+  - service-alerts.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # 10% of requests fail: above the 5% threshold, so the alert should fire, but
+  # only after its 5 minute hold.
+  - interval: 1m
+    name: error rate above the threshold fires after five minutes
+    input_series:
+      - series: 'http_requests_total{job="demo-api", namespace="demo-dev", route="/api/items", method="GET", status="200"}'
+        values: "0+90x20"
+      - series: 'http_requests_total{job="demo-api", namespace="demo-dev", route="/api/items", method="GET", status="500"}'
+        values: "0+10x20"
+      - series: 'http_request_errors_total{job="demo-api", namespace="demo-dev", route="/api/items", method="GET", status="500"}'
+        values: "0+10x20"
+    alert_rule_test:
+      # The expression turns true on the first minute, once rate() has two
+      # samples. Four minutes in the hold has not elapsed, so nothing fires yet.
+      - eval_time: 4m
+        alertname: HighErrorRate
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: HighErrorRate
+        exp_alerts:
+          - exp_labels:
+              alertname: HighErrorRate
+              severity: critical
+              service: demo-api
+              job: demo-api
+              namespace: demo-dev
+            exp_annotations:
+              summary: "demo-api is returning more than 5% errors"
+              description: "10.0% of requests to demo-api in namespace demo-dev returned 5xx over the last 5 minutes. The threshold is 5% and it has held for 5 minutes."
+              runbook_url: "https://github.com/dimagrotser/k8s-observability-stack/blob/main/docs/runbook.md#higherrorrate"
+
+  # 4% of requests fail. Under the threshold, so nothing should ever fire.
+  - interval: 1m
+    name: error rate under the threshold never fires
+    input_series:
+      - series: 'http_requests_total{job="demo-api", namespace="demo-dev", route="/api/items", method="GET", status="200"}'
+        values: "0+96x20"
+      - series: 'http_requests_total{job="demo-api", namespace="demo-dev", route="/api/items", method="GET", status="500"}'
+        values: "0+4x20"
+      - series: 'http_request_errors_total{job="demo-api", namespace="demo-dev", route="/api/items", method="GET", status="500"}'
+        values: "0+4x20"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: HighErrorRate
+        exp_alerts: []
+
+  # Probe traffic must not count. Every /ready response here is a 503, which is
+  # what a pod looks like while it warms up. If the filter regressed, this test
+  # fails loudly.
+  - interval: 1m
+    name: failing probes do not count as service errors
+    input_series:
+      - series: 'http_requests_total{job="demo-api", namespace="demo-dev", route="/api/items", method="GET", status="200"}'
+        values: "0+100x20"
+      - series: 'http_requests_total{job="demo-api", namespace="demo-dev", route="/ready", method="GET", status="503"}'
+        values: "0+60x20"
+      - series: 'http_request_errors_total{job="demo-api", namespace="demo-dev", route="/ready", method="GET", status="503"}'
+        values: "0+60x20"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: HighErrorRate
+        exp_alerts: []
+
+  # 90 of every 100 requests land between 500ms and 1s, which puts p95 well
+  # above the threshold. Only the buckets that matter are listed; the rest of
+  # the histogram stays at zero.
+  - interval: 1m
+    name: p95 above 500ms fires after five minutes
+    input_series:
+      - series: 'http_request_duration_seconds_bucket{job="demo-api", namespace="demo-dev", route="/api/items", method="GET", status="200", le="0.25"}'
+        values: "0+0x20"
+      - series: 'http_request_duration_seconds_bucket{job="demo-api", namespace="demo-dev", route="/api/items", method="GET", status="200", le="0.5"}'
+        values: "0+10x20"
+      - series: 'http_request_duration_seconds_bucket{job="demo-api", namespace="demo-dev", route="/api/items", method="GET", status="200", le="1"}'
+        values: "0+100x20"
+      - series: 'http_request_duration_seconds_bucket{job="demo-api", namespace="demo-dev", route="/api/items", method="GET", status="200", le="+Inf"}'
+        values: "0+100x20"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: HighLatencyP95
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: HighLatencyP95
+        exp_alerts:
+          - exp_labels:
+              alertname: HighLatencyP95
+              severity: warning
+              service: demo-api
+              job: demo-api
+              namespace: demo-dev
+            exp_annotations:
+              summary: "demo-api p95 latency is above 500ms"
+              description: "p95 latency for demo-api in namespace demo-dev is 0.972s, above the 500ms threshold, and has stayed there for 5 minutes."
+              runbook_url: "https://github.com/dimagrotser/k8s-observability-stack/blob/main/docs/runbook.md#highlatencyp95"
+
+  # Everything under 250ms: p95 sits well below the threshold.
+  - interval: 1m
+    name: fast responses never trigger the latency alert
+    input_series:
+      - series: 'http_request_duration_seconds_bucket{job="demo-api", namespace="demo-dev", route="/api/items", method="GET", status="200", le="0.25"}'
+        values: "0+100x20"
+      - series: 'http_request_duration_seconds_bucket{job="demo-api", namespace="demo-dev", route="/api/items", method="GET", status="200", le="0.5"}'
+        values: "0+100x20"
+      - series: 'http_request_duration_seconds_bucket{job="demo-api", namespace="demo-dev", route="/api/items", method="GET", status="200", le="1"}'
+        values: "0+100x20"
+      - series: 'http_request_duration_seconds_bucket{job="demo-api", namespace="demo-dev", route="/api/items", method="GET", status="200", le="+Inf"}'
+        values: "0+100x20"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: HighLatencyP95
+        exp_alerts: []
