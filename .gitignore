@@ -1,0 +1,13 @@
+# Node
+node_modules/
+coverage/
+npm-debug.log*
+.eslintcache
+
+# Local-only secrets and generated values. Nothing here is ever committed.
+.env
+*.local.yaml
+monitoring/secrets/
+
+# macOS
+.DS_Store
