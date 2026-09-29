@@ -1,0 +1,275 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push to the same branch makes the previous run pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Every tool is pinned. A green build today should stay green tomorrow for
+  # reasons that have nothing to do with someone else's release schedule.
+  NODE_VERSION: "24.12.0"
+  KUSTOMIZE_VERSION: "5.8.1"
+  KUBECONFORM_VERSION: "0.8.0"
+  PROMETHEUS_VERSION: "3.15.0"
+  YQ_VERSION: "4.54.1"
+  K3D_VERSION: "5.9.0"
+  KUBECTL_VERSION: "1.37.1"
+  PROMETHEUS_OPERATOR_VERSION: "v0.94.1"
+  IMAGE_TAG: "0.1.0"
+
+jobs:
+  app:
+    name: Lint and unit tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Lint
+        working-directory: app
+        run: npm run lint
+
+      - name: Unit tests
+        working-directory: app
+        run: npm test
+
+  manifests:
+    name: Validate manifests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cache tools
+        uses: actions/cache@v6
+        with:
+          path: ~/.local/bin
+          key: tools-manifests-${{ runner.os }}-${{ env.KUSTOMIZE_VERSION }}-${{ env.KUBECONFORM_VERSION }}
+
+      - name: Install kustomize and kubeconform
+        run: |
+          mkdir -p ~/.local/bin
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+          if [ ! -x ~/.local/bin/kustomize ]; then
+            curl -sSfL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" \
+              | tar -xz -C ~/.local/bin kustomize
+          fi
+
+          if [ ! -x ~/.local/bin/kubeconform ]; then
+            curl -sSfL "https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+              | tar -xz -C ~/.local/bin kubeconform
+          fi
+
+      - name: Build and validate every overlay
+        run: |
+          set -euo pipefail
+          crd_schemas='https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+
+          for overlay in k8s/overlays/*/; do
+            echo "::group::${overlay}"
+            kustomize build "$overlay" \
+              | kubeconform -strict -summary -schema-location default -schema-location "$crd_schemas" -
+            echo "::endgroup::"
+          done
+
+          echo "::group::monitoring/dashboards"
+          kustomize build monitoring/dashboards | kubeconform -strict -summary -
+          echo "::endgroup::"
+
+          echo "::group::monitoring/rules"
+          kustomize build monitoring/rules \
+            | kubeconform -strict -summary -schema-location default -schema-location "$crd_schemas" -
+          echo "::endgroup::"
+
+  rules:
+    name: Alert rules
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cache tools
+        uses: actions/cache@v6
+        with:
+          path: ~/.local/bin
+          key: tools-rules-${{ runner.os }}-${{ env.PROMETHEUS_VERSION }}-${{ env.YQ_VERSION }}
+
+      - name: Install promtool and yq
+        run: |
+          mkdir -p ~/.local/bin
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+          if [ ! -x ~/.local/bin/promtool ]; then
+            curl -sSfL "https://github.com/prometheus/prometheus/releases/download/v${PROMETHEUS_VERSION}/prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz" \
+              | tar -xz --strip-components=1 -C ~/.local/bin "prometheus-${PROMETHEUS_VERSION}.linux-amd64/promtool"
+          fi
+
+          if [ ! -x ~/.local/bin/yq ]; then
+            curl -sSfL "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64" \
+              -o ~/.local/bin/yq
+            chmod +x ~/.local/bin/yq
+          fi
+
+      # Syntax, plus the check that every alert carries summary, description,
+      # severity and a runbook_url whose anchor really exists in the runbook.
+      - name: Check rules
+        run: scripts/check-rules.sh monitoring/rules
+
+      - name: Unit test rules
+        run: scripts/test-rules.sh monitoring/rules monitoring/rules/tests
+
+  image:
+    name: Build and push image
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      # Pull requests from forks have no write access to the registry, and
+      # pushing an image from unreviewed code would be wrong anyway.
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}/demo-api
+          # No `latest`: every tag here points at exactly one commit.
+          flavor: latest=false
+          tags: |
+            type=sha,format=long,prefix=sha-
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: app
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  e2e:
+    name: End to end on k3d
+    runs-on: ubuntu-24.04
+    # No point burning a cluster on code that does not lint.
+    needs: [app]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build the image into the local daemon
+        uses: docker/build-push-action@v7
+        with:
+          context: app
+          load: true
+          tags: demo-api:${{ env.IMAGE_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Cache tools
+        uses: actions/cache@v6
+        with:
+          path: ~/.local/bin
+          key: tools-e2e-${{ runner.os }}-${{ env.KUSTOMIZE_VERSION }}-${{ env.K3D_VERSION }}-${{ env.KUBECTL_VERSION }}
+
+      - name: Install kustomize, k3d and kubectl
+        run: |
+          mkdir -p ~/.local/bin
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+          if [ ! -x ~/.local/bin/kustomize ]; then
+            curl -sSfL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" \
+              | tar -xz -C ~/.local/bin kustomize
+          fi
+
+          if [ ! -x ~/.local/bin/k3d ]; then
+            curl -sSfL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh \
+              | TAG="v${K3D_VERSION}" USE_SUDO=false K3D_INSTALL_DIR="$HOME/.local/bin" bash
+          fi
+
+          # The runner image ships a kubectl, but pinning it keeps CI on the
+          # same version the manifests were verified against locally.
+          if [ ! -x ~/.local/bin/kubectl ]; then
+            curl -sSfL "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
+              -o ~/.local/bin/kubectl
+            chmod +x ~/.local/bin/kubectl
+          fi
+
+      - name: Create the cluster
+        run: make cluster-up
+
+      # The ServiceMonitor in k8s/base needs the operator CRD. Installing the
+      # one CRD instead of the whole monitoring stack keeps this job under a
+      # minute while still applying exactly the manifests the repo ships.
+      - name: Install the ServiceMonitor CRD
+        run: |
+          kubectl apply --server-side -f \
+            "https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/${PROMETHEUS_OPERATOR_VERSION}/example/prometheus-operator-crd/monitoring.coreos.com_servicemonitors.yaml"
+
+      - name: Load the image and deploy
+        run: make load-image deploy
+
+      - name: Smoke test
+        run: make smoke
+
+      - name: Check the metrics endpoint exposes RED series
+        run: |
+          set -euo pipefail
+          metrics="$(curl -sS --max-time 10 --resolve demo.localhost:8080:127.0.0.1 http://demo.localhost:8080/metrics)"
+
+          for series in http_requests_total http_request_duration_seconds_bucket process_resident_memory_bytes; do
+            echo "$metrics" | grep -q "^${series}" || {
+              echo "missing series: ${series}"
+              exit 1
+            }
+          done
+
+          # The route label must be the matched template, never the raw URL.
+          echo "$metrics" | grep -q 'http_requests_total{route="/api/items"' || {
+            echo 'no http_requests_total series with route="/api/items"'
+            exit 1
+          }
+
+      - name: Dump diagnostics
+        if: failure()
+        run: |
+          kubectl get pods -A -o wide || true
+          kubectl -n demo-dev describe deploy/demo-api || true
+          kubectl -n demo-dev describe pods || true
+          kubectl -n demo-dev logs -l app.kubernetes.io/name=demo-api --tail=200 || true
+
+      - name: Delete the cluster
+        if: always()
+        run: make cluster-down
